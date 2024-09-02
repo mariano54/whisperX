@@ -1,6 +1,7 @@
 import os
+import time
 import warnings
-from typing import List, Union, Optional, NamedTuple
+from typing import List, Union, Optional, NamedTuple, Callable
 
 import ctranslate2
 import faster_whisper
@@ -23,12 +24,16 @@ def find_numeral_symbol_tokens(tokenizer):
     return numeral_symbol_tokens
 
 class WhisperModel(faster_whisper.WhisperModel):
+    def __init__(self, phase_finished_cb=None, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.phase_finished_cb = phase_finished_cb
     '''
     FasterWhisperModel provides batched inference for faster-whisper.
     Currently only works in non-timestamp mode and fixed prompt for all samples in batch.
     '''
 
     def generate_segment_batched(self, features: np.ndarray, tokenizer: faster_whisper.tokenizer.Tokenizer, options: faster_whisper.transcribe.TranscriptionOptions, encoder_output = None):
+        start_t = time.time()
         batch_size = features.shape[0]
         all_tokens = []
         prompt_reset_since = 0
@@ -36,6 +41,8 @@ class WhisperModel(faster_whisper.WhisperModel):
             initial_prompt = " " + options.initial_prompt.strip()
             initial_prompt_tokens = tokenizer.encode(initial_prompt)
             all_tokens.extend(initial_prompt_tokens)
+            print("initial prompt:", initial_prompt)
+        print(f"\t1: {time.time() - start_t}")
         previous_tokens = all_tokens[prompt_reset_since:]
         prompt = self.get_prompt(
             tokenizer,
@@ -43,8 +50,10 @@ class WhisperModel(faster_whisper.WhisperModel):
             without_timestamps=options.without_timestamps,
             prefix=options.prefix,
         )
+        print(f"\t2: {time.time() - start_t}")
 
         encoder_output = self.encode(features)
+        print(f"\t2.5: {time.time() - start_t}")
 
         max_initial_timestamp_index = int(
             round(options.max_initial_timestamp / self.time_precision)
@@ -60,6 +69,7 @@ class WhisperModel(faster_whisper.WhisperModel):
                 suppress_blank=options.suppress_blank,
                 suppress_tokens=options.suppress_tokens,
             )
+        print(f"\t3: {time.time() - start_t}")
 
         tokens_batch = [x.sequences_ids[0] for x in result]
 
@@ -71,24 +81,31 @@ class WhisperModel(faster_whisper.WhisperModel):
             return tokenizer.tokenizer.decode_batch(res)
 
         text = decode_batch(tokens_batch)
+        print(f"\t4: {time.time() - start_t}")
 
         return text
 
     def encode(self, features: np.ndarray) -> ctranslate2.StorageView:
         # When the model is running on multiple GPUs, the encoder output should be moved
         # to the CPU since we don't know which GPU will handle the next job.
+        start_t = time.time()
         to_cpu = self.model.device == "cuda" and len(self.model.device_index) > 1
         # unsqueeze if batch size = 1
         if len(features.shape) == 2:
             features = np.expand_dims(features, 0)
+        print("\t encode 1", time.time() - start_t)
         features = faster_whisper.transcribe.get_ctranslate2_storage(features)
+        print("\t encode 2", time.time() - start_t)
 
-        return self.model.encode(features, to_cpu=to_cpu)
+        res = self.model.encode(features, to_cpu=to_cpu)
+        print("\t encode 3", time.time() - start_t)
+        return res
 
 class FasterWhisperPipeline(Pipeline):
     """
     Huggingface Pipeline wrapper for FasterWhisperModel.
     """
+
     # TODO:
     # - add support for timestamp mode
     # - add support for custom inference kwargs
@@ -171,25 +188,31 @@ class FasterWhisperPipeline(Pipeline):
         return final_iterator
 
     def transcribe(
-        self, audio: Union[str, np.ndarray], batch_size=None, num_workers=0, language=None, task=None, chunk_size=30, print_progress = False, combined_progress=False
+        self, audio: Union[str, np.ndarray], batch_size=None, num_workers=0, language=None, task=None, chunk_size=30, print_progress = False, combined_progress=False, transcription_id:str = "123"
     ) -> TranscriptionResult:
+        start_t_t = time.time()
         if isinstance(audio, str):
             audio = load_audio(audio)
-
+        print(f"\tA {time.time() - start_t_t} ")
         def data(audio, segments):
-            for seg in segments:
-                f1 = int(seg['start'] * SAMPLE_RATE)
-                f2 = int(seg['end'] * SAMPLE_RATE)
-                # print(f2-f1)
-                yield {'inputs': audio[f1:f2]}
+            # for seg in segments:
+            #     f1 = int(seg['start'] * SAMPLE_RATE)
+            #     f2 = int(seg['end'] * SAMPLE_RATE)
+            #     # print(f2-f1)
+            yield {'inputs': audio[:]}
+        convert_to_np = torch.from_numpy(audio).unsqueeze(0)
+        print(f"\tA2 {time.time() - start_t_t} ")
 
-        vad_segments = self.vad_model({"waveform": torch.from_numpy(audio).unsqueeze(0), "sample_rate": SAMPLE_RATE})
-        vad_segments = merge_chunks(
-            vad_segments,
-            chunk_size,
-            onset=self._vad_params["vad_onset"],
-            offset=self._vad_params["vad_offset"],
-        )
+        # vad_segments = self.vad_model({"waveform":  convert_to_np, "sample_rate": SAMPLE_RATE})
+        # print(f"\tB {time.time() - start_t_t} ")
+        # vad_segments = merge_chunks(
+        #     vad_segments,
+        #     chunk_size,
+        #     onset=self._vad_params["vad_onset"],
+        #     offset=self._vad_params["vad_offset"],
+        # )
+        print(f"\tC {time.time() - start_t_t} ")
+        # print(f"g\tVAD results: {vad_segments}")
         if self.tokenizer is None:
             language = language or self.detect_language(audio)
             task = task or "transcribe"
@@ -203,7 +226,8 @@ class FasterWhisperPipeline(Pipeline):
                 self.tokenizer = faster_whisper.tokenizer.Tokenizer(self.model.hf_tokenizer,
                                                                     self.model.model.is_multilingual, task=task,
                                                                     language=language)
-                
+
+        print(f"\tD {time.time() - start_t_t} ")
         if self.suppress_numerals:
             previous_suppress_tokens = self.options.suppress_tokens
             numeral_symbol_tokens = find_numeral_symbol_tokens(self.tokenizer)
@@ -212,10 +236,14 @@ class FasterWhisperPipeline(Pipeline):
             new_suppressed_tokens = list(set(new_suppressed_tokens))
             self.options = self.options._replace(suppress_tokens=new_suppressed_tokens)
 
+        print(f"\tE {time.time() - start_t_t} ")
         segments: List[SingleSegment] = []
         batch_size = batch_size or self._batch_size
-        total_segments = len(vad_segments)
-        for idx, out in enumerate(self.__call__(data(audio, vad_segments), batch_size=batch_size, num_workers=num_workers)):
+        total_segments = 1
+        start_t = time.time()
+        for idx, out in enumerate(self.__call__(data(audio, None), batch_size=batch_size, num_workers=num_workers)):
+            print(f"Doing a segment, {out['text']} {time.time() - start_t}")
+
             if print_progress:
                 base_progress = ((idx + 1) / total_segments) * 100
                 percent_complete = base_progress / 2 if combined_progress else base_progress
@@ -226,11 +254,12 @@ class FasterWhisperPipeline(Pipeline):
             segments.append(
                 {
                     "text": text,
-                    "start": round(vad_segments[idx]['start'], 3),
-                    "end": round(vad_segments[idx]['end'], 3)
+                    # "start": round(vad_segments[idx]['start'], 3),
+                    # "end": round(vad_segments[idx]['end'], 3)
                 }
             )
 
+        print(f"\tF {time.time() - start_t_t} ")
         # revert the tokenizer if multilingual inference is enabled
         if self.preset_language is None:
             self.tokenizer = None
@@ -239,8 +268,9 @@ class FasterWhisperPipeline(Pipeline):
         if self.suppress_numerals:
             self.options = self.options._replace(suppress_tokens=previous_suppress_tokens)
 
+        print(f"\tG {time.time() - start_t_t} ")
         return {"segments": segments, "language": language}
-
+        
 
     def detect_language(self, audio: np.ndarray):
         if audio.shape[0] < N_SAMPLES:
@@ -267,7 +297,8 @@ def load_model(whisper_arch,
                model : Optional[WhisperModel] = None,
                task="transcribe",
                download_root=None,
-               threads=4):
+               threads=4,
+               phase_finished_cb: Optional[Callable]=None):
     '''Load a Whisper model for inference.
     Args:
         whisper_arch: str - The name of the Whisper model to load.
@@ -285,18 +316,20 @@ def load_model(whisper_arch,
     if whisper_arch.endswith(".en"):
         language = "en"
 
-    model = model or WhisperModel(whisper_arch,
+    model = model or WhisperModel(
+                         phase_finished_cb,
+                         whisper_arch,
                          device=device,
                          device_index=device_index,
                          compute_type=compute_type,
                          download_root=download_root,
                          cpu_threads=threads)
     if language is not None:
-        tokenizer = faster_whisper.tokenizer.Tokenizer(model.hf_tokenizer, model.model.is_multilingual, task=task, language=language)
+        tokenizer = faster_whisper.tokenizer.Tokenizer(model.hf_tokenizer, False, task=task, language=language)
     else:
         print("No language specified, language will be first be detected for each audio file (increases inference time).")
         tokenizer = None
-
+    print("language", language, "multilingual", model.model.is_multilingual)
     default_asr_options =  {
         "beam_size": 5,
         "best_of": 5,
@@ -323,6 +356,12 @@ def load_model(whisper_arch,
         "max_new_tokens": None,
         "clip_timestamps": None,
         "hallucination_silence_threshold": None,
+        "output_language": language,
+        "log_prob_low_threshold": None,
+        "multilingual": model.model.is_multilingual,
+        "hotwords": None,
+        "transcription_id": None
+
     }
 
     if asr_options is not None:

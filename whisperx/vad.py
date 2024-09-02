@@ -53,6 +53,7 @@ def load_vad_model(device, vad_onset=0.500, vad_offset=0.363, use_auth_token=Non
                     "offset": vad_offset,
                     "min_duration_on": 0.1,
                     "min_duration_off": 0.1}
+    print(f"Doing vad on {device}")
     vad_pipeline = VoiceActivitySegmentation(segmentation=vad_model, device=torch.device(device))
     vad_pipeline.instantiate(hyperparameters)
 
