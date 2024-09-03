@@ -41,8 +41,6 @@ class WhisperModel(faster_whisper.WhisperModel):
             initial_prompt = " " + options.initial_prompt.strip()
             initial_prompt_tokens = tokenizer.encode(initial_prompt)
             all_tokens.extend(initial_prompt_tokens)
-            print("initial prompt:", initial_prompt)
-        print(f"\t1: {time.time() - start_t}")
         previous_tokens = all_tokens[prompt_reset_since:]
         prompt = self.get_prompt(
             tokenizer,
@@ -50,10 +48,8 @@ class WhisperModel(faster_whisper.WhisperModel):
             without_timestamps=options.without_timestamps,
             prefix=options.prefix,
         )
-        print(f"\t2: {time.time() - start_t}")
 
         encoder_output = self.encode(features)
-        print(f"\t2.5: {time.time() - start_t}")
 
         max_initial_timestamp_index = int(
             round(options.max_initial_timestamp / self.time_precision)
@@ -69,7 +65,6 @@ class WhisperModel(faster_whisper.WhisperModel):
                 suppress_blank=options.suppress_blank,
                 suppress_tokens=options.suppress_tokens,
             )
-        print(f"\t3: {time.time() - start_t}")
 
         tokens_batch = [x.sequences_ids[0] for x in result]
 
@@ -81,7 +76,6 @@ class WhisperModel(faster_whisper.WhisperModel):
             return tokenizer.tokenizer.decode_batch(res)
 
         text = decode_batch(tokens_batch)
-        print(f"\t4: {time.time() - start_t}")
 
         return text
 
@@ -93,12 +87,9 @@ class WhisperModel(faster_whisper.WhisperModel):
         # unsqueeze if batch size = 1
         if len(features.shape) == 2:
             features = np.expand_dims(features, 0)
-        print("\t encode 1", time.time() - start_t)
         features = faster_whisper.transcribe.get_ctranslate2_storage(features)
-        print("\t encode 2", time.time() - start_t)
 
         res = self.model.encode(features, to_cpu=to_cpu)
-        print("\t encode 3", time.time() - start_t)
         return res
 
 class FasterWhisperPipeline(Pipeline):
@@ -188,12 +179,11 @@ class FasterWhisperPipeline(Pipeline):
         return final_iterator
 
     def transcribe(
-        self, audio: Union[str, np.ndarray], batch_size=None, num_workers=0, language=None, task=None, chunk_size=30, print_progress = False, combined_progress=False, transcription_id:str = "123"
+        self, audio: Union[str, np.ndarray], batch_size=None, num_workers=0, language=None, task=None, chunk_size=30, print_progress = False, combined_progress=False,
     ) -> TranscriptionResult:
         start_t_t = time.time()
         if isinstance(audio, str):
             audio = load_audio(audio)
-        print(f"\tA {time.time() - start_t_t} ")
         def data(audio, segments):
             # for seg in segments:
             #     f1 = int(seg['start'] * SAMPLE_RATE)
@@ -201,18 +191,14 @@ class FasterWhisperPipeline(Pipeline):
             #     # print(f2-f1)
             yield {'inputs': audio[:]}
         convert_to_np = torch.from_numpy(audio).unsqueeze(0)
-        print(f"\tA2 {time.time() - start_t_t} ")
 
         # vad_segments = self.vad_model({"waveform":  convert_to_np, "sample_rate": SAMPLE_RATE})
-        # print(f"\tB {time.time() - start_t_t} ")
         # vad_segments = merge_chunks(
         #     vad_segments,
         #     chunk_size,
         #     onset=self._vad_params["vad_onset"],
         #     offset=self._vad_params["vad_offset"],
         # )
-        print(f"\tC {time.time() - start_t_t} ")
-        # print(f"g\tVAD results: {vad_segments}")
         if self.tokenizer is None:
             language = language or self.detect_language(audio)
             task = task or "transcribe"
@@ -227,22 +213,18 @@ class FasterWhisperPipeline(Pipeline):
                                                                     self.model.model.is_multilingual, task=task,
                                                                     language=language)
 
-        print(f"\tD {time.time() - start_t_t} ")
         if self.suppress_numerals:
             previous_suppress_tokens = self.options.suppress_tokens
             numeral_symbol_tokens = find_numeral_symbol_tokens(self.tokenizer)
-            print(f"Suppressing numeral and symbol tokens")
             new_suppressed_tokens = numeral_symbol_tokens + self.options.suppress_tokens
             new_suppressed_tokens = list(set(new_suppressed_tokens))
             self.options = self.options._replace(suppress_tokens=new_suppressed_tokens)
 
-        print(f"\tE {time.time() - start_t_t} ")
         segments: List[SingleSegment] = []
         batch_size = batch_size or self._batch_size
         total_segments = 1
         start_t = time.time()
         for idx, out in enumerate(self.__call__(data(audio, None), batch_size=batch_size, num_workers=num_workers)):
-            print(f"Doing a segment, {out['text']} {time.time() - start_t}")
 
             if print_progress:
                 base_progress = ((idx + 1) / total_segments) * 100
@@ -259,7 +241,6 @@ class FasterWhisperPipeline(Pipeline):
                 }
             )
 
-        print(f"\tF {time.time() - start_t_t} ")
         # revert the tokenizer if multilingual inference is enabled
         if self.preset_language is None:
             self.tokenizer = None
@@ -268,7 +249,6 @@ class FasterWhisperPipeline(Pipeline):
         if self.suppress_numerals:
             self.options = self.options._replace(suppress_tokens=previous_suppress_tokens)
 
-        print(f"\tG {time.time() - start_t_t} ")
         return {"segments": segments, "language": language}
         
 
@@ -360,7 +340,6 @@ def load_model(whisper_arch,
         "log_prob_low_threshold": None,
         "multilingual": model.model.is_multilingual,
         "hotwords": None,
-        "transcription_id": None
 
     }
 
