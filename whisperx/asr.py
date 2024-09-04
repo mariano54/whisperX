@@ -336,9 +336,6 @@ def load_model(whisper_arch,
         "max_new_tokens": None,
         "clip_timestamps": None,
         "hallucination_silence_threshold": None,
-        "output_language": language,
-        "log_prob_low_threshold": None,
-        "multilingual": model.model.is_multilingual,
         "hotwords": None,
 
     }
